@@ -2,7 +2,9 @@
 
 **Verified state machines and protocols for the BEAM**
 
-Vor compiles to gen_server and gen_statem. At runtime, a Vor agent is a normal OTP process — supervised, distributed, hot-reloadable. What Vor adds is compile-time verification: the compiler proves your safety invariants, checks your message protocols, and catches missing handlers before you deploy.
+*Named for the Norse goddess who witnesses oaths. Vor programs are oaths about system behavior — declared, witnessed by the compiler, and enforced.*
+
+[GitHub](https://github.com/vorlang/vor)
 
 ---
 
@@ -123,4 +125,4 @@ Each language does what it does best. The boundaries between them are explicit a
 
 ---
 
-[GitHub](https://github.com/vorlang/vor) · MIT License
+MIT License
