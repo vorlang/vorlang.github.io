@@ -1,45 +1,126 @@
-# The Vor Manifesto
+# Vor
 
-*Named for the Norse goddess who witnesses oaths and punishes oath-breakers*
+**Verified state machines and protocols for the BEAM**
 
----
-
-We are building software wrong.
-
-Not because our tools are bad — they are extraordinary. Not because our engineers are unskilled — they are brilliant. We are building software wrong because we are still writing instructions for machines when we should be declaring truths about systems.
-
-Every mainstream programming language assumes a human will specify *how* a system behaves, step by step, in explicit detail. This assumption shaped sixty years of language design, tooling, and practice. It gave us functions, classes, modules, version control, code review, test suites, and CI pipelines — an enormous apparatus built around one premise: that a human mind must bridge the gap between intent and execution.
-
-That premise is no longer true.
-
-AI can bridge that gap. But only if we stop asking it to write code in languages designed for humans and start giving it something better to work with: precise declarations of what must be true, what must never happen, and what must eventually happen. Not instructions. Oaths.
+Vor compiles to gen_server and gen_statem. At runtime, a Vor agent is a normal OTP process — supervised, distributed, hot-reloadable. What Vor adds is compile-time verification: the compiler proves your safety invariants, checks your message protocols, and catches missing handlers before you deploy.
 
 ---
 
-**We believe the specification is the program.** There should be no separate implementation to maintain, review, or debug. The human declares the system's properties. The machine produces an execution that satisfies them. If the properties change, the execution is re-derived. The spec is the only artifact that matters.
+## What it looks like
 
-**We believe relations are more fundamental than functions.** A function imposes direction: input to output. A relation declares an association that can be traversed any way the system needs. Most knowledge is naturally relational. We have been forcing it into a directional mold because our languages required it, not because the problem demanded it.
+A distributed lock with a proven safety invariant:
 
-**We believe correctness guarantees must be explicit.** Every property of a system should be labeled with the strength of its guarantee: proven by the compiler, checked against synthesis output, or monitored at runtime. Mixing these — or worse, leaving them implicit — creates false confidence. We would rather have an honest "monitored" than a dishonest "proven."
+```vor
+agent LockManager(lock_timeout_ms: integer) do
+  state phase: :free | :held
+  state holder: atom
+  state wait_queue: list
 
-**We believe failure is a first-class concept.** Synthesis can fail to produce an implementation. Invariants can be violated at runtime. Specifications can contradict themselves. A language that doesn't define what happens in these cases is a language that pretends they won't occur. They will.
+  protocol do
+    accepts {:acquire, client: atom}
+    accepts {:release, client: atom}
+    emits {:grant, client: atom}
+    emits {:queued, position: integer}
+    emits {:ok}
+  end
 
-**We believe AI should be bounded, not trusted.** AI synthesis operates within declared constraints. Its output is verified before deployment. It doesn't make architectural decisions the human didn't authorize. The AI is powerful, but it is not in charge. The spec is in charge.
+  on {:acquire, client: C} when phase == :free do
+    transition phase: :held
+    transition holder: C
+    emit {:grant, client: C}
+  end
 
-**We believe the runtime matters.** Grand visions fail without pragmatic foundations. We build on the BEAM — the same virtual machine that runs Erlang and Elixir — because it provides concurrency, fault tolerance, hot code reloading, and distribution that have been proven in production for thirty years. We are radical in our language design and conservative in our runtime.
+  on {:acquire, client: C} when phase == :held do
+    transition wait_queue: list_append(wait_queue, C)
+    qlen = list_length(wait_queue)
+    emit {:queued, position: qlen}
+  end
 
-**We believe escape hatches are not defeat.** Not everything belongs in a declarative specification. Performance-critical inner loops, raw system integration, and unconstrained side effects sometimes need human-authored code. Vor provides explicit boundaries where Erlang and Elixir take over — untrusted by default, monitored at the boundary, seamless in practice.
+  on {:release, client: C} when phase == :held do
+    if list_empty(wait_queue) == :true do
+      transition phase: :free
+      transition holder: :nil
+      emit {:ok}
+    else
+      next_client = list_head(wait_queue)
+      transition wait_queue: list_tail(wait_queue)
+      transition holder: next_client
+      emit {:ok}
+    end
+  end
+
+  safety "no grant when held" proven do
+    never(phase == :held and emitted({:grant, _}))
+  end
+
+  liveness "lock released eventually" monitored(within: lock_timeout_ms) do
+    always(phase == :held implies eventually(phase != :held))
+  end
+
+  resilience do
+    on_invariant_violation("lock released eventually") ->
+      transition phase: :free
+      transition holder: :nil
+  end
+end
+```
+
+The `safety` invariant is proven at compile time — the compiler exhaustively walks every state × emit combination and rejects the program if the property can be violated. The `liveness` invariant is monitored at runtime — if the lock is held longer than the timeout, the resilience handler fires and auto-recovers.
+
+This compiles to a gen_statem. Start it like any OTP process:
+
+```elixir
+{:ok, pid} = :gen_statem.start_link(LockManager, [lock_timeout_ms: 5000], [])
+:gen_statem.call(pid, {:acquire, %{client: :alice}})
+# => {:grant, %{client: :alice}}
+```
 
 ---
 
-Layering AI onto mainstream languages produces code faster. It does not produce better systems. The generated code inherits every failure mode of the host language. The review burden shifts from writing to reading — and reading code you didn't write is harder than writing it yourself. Tests generated alongside code validate assumptions against themselves. The spec-implementation gap doesn't close; it fills with unreviewed decisions that compound into drift.
+## What the compiler checks
 
-We do not believe this is the future. We believe it is the transition.
+**Safety invariants** — "this must never happen." Proven at compile time by exhaustive graph traversal. If any reachable state can violate the invariant, compilation fails.
 
-The future is a language where humans declare what must be true and machines make it so — where the declaration is precise enough to be verified and the synthesis is constrained enough to be trusted. Where the oaths you swear about your system are witnessed, checked, and enforced.
+**Handler coverage** — every message type declared in the protocol has at least one handler. No unhandled messages at runtime.
 
-That language is Vor.
+**Protocol composition** — when agents are wired together in a system block, the compiler verifies that send/accept declarations match. Field name typos and tag mismatches are compile errors.
+
+**Liveness monitoring** — "this must eventually happen." Enforced at runtime with declared timeouts and recovery handlers. The recovery path is itself checked against the safety invariants.
+
+**Gleam type boundary** — extern calls to Gleam modules are validated against Gleam's package-interface.json. Arity mismatches, wrong parameter types, and wrong return types are caught at compile time.
 
 ---
 
-*vorlang.org · Design phase · Open source*
+## What's working
+
+287+ tests. Five examples: rate limiter, circuit breaker, Raft consensus, G-Counter CRDT, distributed lock. Three CRDT types (G-Counter, PN-Counter, version-based OR-Set) expressed entirely in native Vor with zero extern calls. Compilation under 5ms, verification under 2ms. The safety verifier is itself verified by TLA+ specifications.
+
+A CRDT-based distributed database ([VorDB](https://github.com/vorlang/vordb)) is the first real consumer, driving language features through practical use.
+
+---
+
+## How it fits with Elixir and Gleam
+
+Vor doesn't replace OTP — it compiles to OTP. It's designed to complement Elixir and Gleam:
+
+- **Vor** handles the coordination layer — state machines, protocols, invariants. The part where getting it wrong causes silent failures in production.
+- **Gleam** handles the data processing layer — type-safe transformations, CRDT operations, business logic. Called from Vor via type-validated `extern gleam` blocks.
+- **Elixir** handles the infrastructure — supervision trees, deployment, Phoenix, Ecto, and the rest of the ecosystem. Called from Vor via `extern` blocks.
+
+Each language does what it does best. The boundaries between them are explicit and checked.
+
+---
+
+## Design principles
+
+**The spec is the program.** The `.vor` file is both the specification and the implementation. No separate model to maintain. No drift.
+
+**Guarantee tiers are explicit.** Every property is labeled `proven` or `monitored`. The compiler fails closed — it never claims to verify what it can't.
+
+**Failure is first-class.** Invariants can be violated. Resilience handlers define what happens. Recovery paths are verified.
+
+**The BEAM is the foundation.** Thirty years of production-proven concurrency, fault tolerance, and distribution underneath.
+
+---
+
+[GitHub](https://github.com/vorlang/vor) · MIT License
