@@ -102,13 +102,40 @@ system RaftCluster do
 end
 ```
 
-The explorer constructs the product state space (all agents' states × all pending messages), systematically delivers messages in every possible order, and checks the invariant at every reachable state. If any message interleaving can produce two leaders, the compiler reports the exact counterexample trace — which message arrived at which agent in which order to cause the violation.
-
-Same code that runs in production. No separate spec. No drift.
+The explorer constructs the product state space, systematically delivers messages in every possible order, and checks the invariant at every reachable state. The Raft cluster invariant "at most one leader" is proven exhaustively in 1,001 states with symmetry reduction — same code that runs in production.
 
 ```bash
 mix compile        # single-agent verification (fast, <5ms)
 mix vor.check      # multi-agent exploration (thorough)
+```
+
+```
+Tracked fields:    current_term, role, vote_count
+Abstracted fields: commit_index, log, voted_for
+Integer bound:     3
+Max queue:         10
+Symmetry:          enabled (3 identical agents, 6× reduction)
+✓ Proven (1001 states, depth 10)
+```
+
+### System-level invariant syntax
+
+```vor
+%% Count-based
+never(count(agents where role == :leader) > 1)
+
+%% Existential — two distinct agents
+never(exists A, B where A.phase == :held and B.phase == :held)
+
+%% Cross-agent comparison
+never(exists A, B where A.role == :leader and B.role == :leader
+  and A.current_term != B.current_term)
+
+%% Universal
+for_all agents, mode == :idle or mode == :active
+
+%% Named agent reference
+never(n1.role == :leader and n1.current_term == 0)
 ```
 
 ---
@@ -117,7 +144,7 @@ mix vor.check      # multi-agent exploration (thorough)
 
 **Safety invariants** — "this must never happen." Proven at compile time by exhaustive graph traversal. If any reachable state can violate the invariant, compilation fails.
 
-**System-level invariants** — properties across multiple agents. Verified by product state exploration via `mix vor.check`. Counterexample traces show the exact message interleaving that causes a violation.
+**System-level invariants** — properties across multiple agents. Verified by product state exploration via `mix vor.check`. State abstraction, integer bounding, and symmetry reduction keep the state space tractable. Counterexample traces show the exact message interleaving that causes a violation.
 
 **Handler coverage** — every message type declared in the protocol has at least one handler.
 
@@ -135,7 +162,7 @@ mix vor.check      # multi-agent exploration (thorough)
 
 ## What's working
 
-328+ tests, 9 property-based test suites. Five examples: rate limiter, circuit breaker, Raft consensus, G-Counter CRDT, distributed lock. Three CRDT types (G-Counter, PN-Counter, version-based OR-Set) expressed entirely in native Vor with zero extern calls. Compilation under 5ms, verification under 2ms. The safety verifier is itself verified by TLA+ specifications.
+349+ tests, 9 property-based test suites. Five examples: rate limiter, circuit breaker, Raft consensus, G-Counter CRDT, distributed lock. Three CRDT types (G-Counter, PN-Counter, version-based OR-Set) expressed entirely in native Vor with zero extern calls. Raft "at most one leader" proven exhaustively via embedded model checker (1,001 states with symmetry reduction). Compilation under 5ms, verification under 2ms. The safety verifier is itself verified by TLA+ specifications.
 
 A CRDT-based distributed database ([VorDB](https://github.com/vorlang/vordb)) is the first real consumer, driving language features through practical use.
 
