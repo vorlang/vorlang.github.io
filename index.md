@@ -102,7 +102,7 @@ system RaftCluster do
 end
 ```
 
-The explorer constructs the product state space, systematically delivers messages in every possible order, and checks the invariant at every reachable state. The Raft cluster invariant "at most one leader" is proven exhaustively in 1,001 states with symmetry reduction — same code that runs in production.
+The Raft cluster invariant "at most one leader" is proven exhaustively in 1,001 states with symmetry reduction — the Raft agent is fully native (zero externs), so the model checker can evaluate every decision path without over-approximation.
 
 ```bash
 mix compile        # single-agent verification (fast, <5ms)
@@ -118,65 +118,44 @@ Symmetry:          enabled (3 identical agents, 6× reduction)
 ✓ Proven (1001 states, depth 10)
 ```
 
-### System-level invariant syntax
-
-```vor
-%% Count-based
-never(count(agents where role == :leader) > 1)
-
-%% Existential — two distinct agents
-never(exists A, B where A.phase == :held and B.phase == :held)
-
-%% Cross-agent comparison
-never(exists A, B where A.role == :leader and B.role == :leader
-  and A.current_term != B.current_term)
-
-%% Universal
-for_all agents, mode == :idle or mode == :active
-
-%% Named agent reference
-never(n1.role == :leader and n1.current_term == 0)
-```
-
 ---
 
 ## What the compiler checks
 
-**Safety invariants** — "this must never happen." Proven at compile time by exhaustive graph traversal. If any reachable state can violate the invariant, compilation fails.
+**Safety invariants** — "this must never happen." Proven at compile time by exhaustive graph traversal.
 
-**System-level invariants** — properties across multiple agents. Verified by product state exploration via `mix vor.check`. State abstraction, integer bounding, and symmetry reduction keep the state space tractable. Counterexample traces show the exact message interleaving that causes a violation.
+**System-level invariants** — properties across multiple agents. Verified by product state exploration via `mix vor.check`. Counterexample traces show the exact message interleaving that causes a violation.
 
 **Handler coverage** — every message type declared in the protocol has at least one handler.
 
 **Protocol composition** — when agents are wired together, the compiler verifies that send/accept declarations match.
 
-**Liveness monitoring** — "this must eventually happen." Enforced at runtime with declared timeouts and recovery handlers. The recovery path is itself checked against the safety invariants.
+**Liveness monitoring** — "this must eventually happen." Enforced at runtime with declared timeouts and recovery handlers.
 
 **Gleam type boundary** — extern calls to Gleam modules are validated against Gleam's package-interface.json.
 
-**Internal type tracking** — the compiler propagates types through handler body expressions and catches guaranteed crashes (map operations on integers, arithmetic on maps) at compile time.
+**Internal type tracking** — the compiler propagates types through handler body expressions and catches guaranteed crashes at compile time.
 
-**Extern proven boundary** — a `proven` invariant whose verification path depends on an extern result is rejected at compile time. The compiler never claims to prove what it can't see.
+**Extern proven boundary** — a `proven` invariant whose verification path depends on an extern result is rejected at compile time.
 
 ---
 
 ## What's working
 
-349+ tests, 9 property-based test suites. Five examples: rate limiter, circuit breaker, Raft consensus, G-Counter CRDT, distributed lock. Three CRDT types (G-Counter, PN-Counter, version-based OR-Set) expressed entirely in native Vor with zero extern calls. Raft "at most one leader" proven exhaustively via embedded model checker (1,001 states with symmetry reduction). Compilation under 5ms, verification under 2ms. The safety verifier is itself verified by TLA+ specifications.
+351+ tests, 9 property-based test suites. All five examples fully native — zero Elixir externs: distributed lock, circuit breaker, Raft consensus, G-Counter CRDT, rate limiter. Three CRDT types (G-Counter, PN-Counter, OR-Set) verified native. Raft "at most one leader" proven in 1,001 states. Compilation under 5ms, verification under 2ms. The safety verifier is itself verified by TLA+ specifications.
 
 A CRDT-based distributed database ([VorDB](https://github.com/vorlang/vordb)) is the first real consumer, driving language features through practical use.
 
 ---
 
-## How it fits with Elixir and Gleam
+## How it fits with Gleam
 
-Vor doesn't replace OTP — it compiles to OTP. It's designed to complement Elixir and Gleam:
+Vor doesn't replace OTP — it compiles to OTP. It's designed to complement Gleam:
 
-- **Vor** handles the coordination layer — state machines, protocols, invariants, model checking. The part where getting it wrong causes silent failures in production.
-- **Gleam** handles the data processing layer — type-safe transformations, CRDT operations, business logic. Called from Vor via type-validated `extern gleam` blocks.
-- **Elixir** handles the infrastructure — supervision trees, deployment, Phoenix, Ecto, and the rest of the ecosystem. Called from Vor via `extern` blocks.
+- **Vor** handles the coordination layer — state machines, protocols, invariants, model checking.
+- **Gleam** handles complex data processing when needed — type-safe transformations called from Vor via validated `extern gleam` blocks.
 
-Each language does what it does best. The boundaries between them are explicit and checked.
+All five examples are fully native Vor. Gleam is there when you need typed library functions for complex data operations — the boundary is validated at compile time.
 
 ---
 
@@ -186,7 +165,7 @@ Each language does what it does best. The boundaries between them are explicit a
 
 **Guarantee tiers are explicit.** Every property is labeled `proven` or `monitored`. The compiler fails closed — it never claims to verify what it can't.
 
-**The extern boundary is a trust boundary.** Proven invariants cannot depend on extern results. Gleam externs are type-validated. The boundary between verified and unverified code is explicit and enforced.
+**The extern boundary is a trust boundary.** Proven invariants cannot depend on extern results. Gleam externs are type-validated.
 
 **Failure is first-class.** Invariants can be violated. Resilience handlers define what happens. Recovery paths are verified.
 
