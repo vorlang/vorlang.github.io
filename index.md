@@ -1,6 +1,6 @@
 # Vor
 
-**Verified state machines and protocols for the BEAM**
+**Verified, observable, chaos-tested distributed systems on the BEAM**
 
 *Named for the Norse goddess who witnesses oaths. Vor programs are oaths about system behavior — declared, witnessed by the compiler, and enforced.*
 
@@ -8,31 +8,44 @@
 
 ---
 
-## What it looks like
+## What it does
 
-A distributed lock with a proven safety invariant:
+Write one file. The compiler produces a verified, instrumented, chaos-testable BEAM binary.
+
+```
+mix compile        →  proves safety properties           (milliseconds)
+mix vor.check      →  model-checks message interleavings (seconds)
+mix vor.simulate   →  chaos-tests real BEAM processes    (minutes)
+```
+
+The compiled binary is pre-instrumented with telemetry. No separate spec. No separate chaos infrastructure. No instrumentation code. No Docker. No Kubernetes.
+
+---
+
+## What it looks like
 
 ```vor
 agent LockManager(lock_timeout_ms: integer) do
   state phase: :free | :held
   state holder: atom
   state wait_queue: list
+  state auth_token: binary sensitive
 
   protocol do
-    accepts {:acquire, client: atom}
+    accepts {:acquire, client: atom, priority: integer} where priority >= 1 and priority <= 10
     accepts {:release, client: atom}
     emits {:grant, client: atom}
     emits {:queued, position: integer}
     emits {:ok}
   end
 
-  on {:acquire, client: C} when phase == :free do
+  on {:acquire, client: C, priority: P} when phase == :free do
     transition phase: :held
     transition holder: C
     emit {:grant, client: C}
   end
 
-  on {:acquire, client: C} when phase == :held do
+  on {:acquire, client: C, priority: P} when phase == :held do
     transition wait_queue: list_append(wait_queue, C)
     qlen = list_length(wait_queue)
     emit {:queued, position: qlen}
@@ -67,21 +80,13 @@ agent LockManager(lock_timeout_ms: integer) do
 end
 ```
 
-The `safety` invariant is proven at compile time — the compiler exhaustively walks every state × emit combination and rejects the program if the property can be violated. The `liveness` invariant is monitored at runtime — if the lock is held longer than the timeout, the resilience handler fires and auto-recovers.
-
-This compiles to a gen_statem. Start it like any OTP process:
-
-```elixir
-{:ok, pid} = :gen_statem.start_link(LockManager, [lock_timeout_ms: 5000], [])
-:gen_statem.call(pid, {:acquire, %{client: :alice}})
-# => {:grant, %{client: :alice}}
-```
+The `safety` invariant is proven at compile time. The `where` constraint rejects invalid input before handlers run. The `sensitive` field is redacted in telemetry. The `liveness` invariant is monitored at runtime with automatic recovery. Every state transition and message generates telemetry. This compiles to a standard OTP gen_statem.
 
 ---
 
 ## Multi-agent model checking
 
-Vor doesn't just verify individual agents — it model-checks entire systems. Wire agents together in a system block with a system-level invariant, and `mix vor.check` explores all reachable combined states through all possible message interleavings:
+Wire agents together and `mix vor.check` proves distributed invariants:
 
 ```vor
 system RaftCluster do
@@ -102,75 +107,103 @@ system RaftCluster do
 end
 ```
 
-The Raft cluster invariant "at most one leader" is proven exhaustively in 1,001 states with symmetry reduction — the Raft agent is fully native (zero externs), so the model checker can evaluate every decision path without over-approximation.
-
-```bash
-mix compile        # single-agent verification (fast, <5ms)
-mix vor.check      # multi-agent exploration (thorough)
-```
-
 ```
 Tracked fields:    current_term, role, vote_count
 Abstracted fields: commit_index, log, voted_for
-Integer bound:     3
-Max queue:         10
 Symmetry:          enabled (3 identical agents, 6× reduction)
 ✓ Proven (1001 states, depth 10)
 ```
 
 ---
 
-## What the compiler checks
+## Chaos simulation
 
-**Safety invariants** — "this must never happen." Proven at compile time by exhaustive graph traversal.
+```bash
+mix vor.simulate --partition --delay --workload 10
+```
 
-**System-level invariants** — properties across multiple agents. Verified by product state exploration via `mix vor.check`. Counterexample traces show the exact message interleaving that causes a violation.
+Starts real BEAM processes. Injects real failures. Checks invariants against live state:
 
-**Handler coverage** — every message type declared in the protocol has at least one handler.
+- Kill agents randomly, let supervisors restart them
+- Partition connections via proxy processes
+- Delay messages for configurable durations
+- Generate client workload from protocol declarations
+- Check invariants every second
+- Replay any run with `--seed N`
 
-**Protocol composition** — when agents are wired together, the compiler verifies that send/accept declarations match.
-
-**Liveness monitoring** — "this must eventually happen." Enforced at runtime with declared timeouts and recovery handlers.
-
-**Gleam type boundary** — extern calls to Gleam modules are validated against Gleam's package-interface.json.
-
-**Internal type tracking** — the compiler propagates types through handler body expressions and catches guaranteed crashes at compile time.
-
-**Extern proven boundary** — a `proven` invariant whose verification path depends on an extern result is rejected at compile time.
+No Chaos Monkey. No Toxiproxy. No Docker. The BEAM provides all the failure injection primitives as function calls.
 
 ---
 
-## What's working
+## Auto-generated telemetry
 
-351+ tests, 9 property-based test suites. All five examples fully native — zero Elixir externs: distributed lock, circuit breaker, Raft consensus, G-Counter CRDT, rate limiter. Three CRDT types (G-Counter, PN-Counter, OR-Set) verified native. Raft "at most one leader" proven in 1,001 states. Compilation under 5ms, verification under 2ms. The safety verifier is itself verified by TLA+ specifications.
+Every compiled Vor agent is observable by default. Zero instrumentation code.
 
-A CRDT-based distributed database ([VorDB](https://github.com/vorlang/vordb)) is the first real consumer, driving language features through practical use.
+| Event | Fires on |
+|---|---|
+| `[:vor, :agent, :start]` | Agent initialization |
+| `[:vor, :message, :received]` | Handler invocation |
+| `[:vor, :transition]` | State field change (sensitive fields redacted) |
+| `[:vor, :message, :emitted]` | Reply sent |
+| `[:vor, :constraint, :violated]` | Protocol constraint rejection |
+
+Attach any `:telemetry` backend and every agent is visible. The compiler generated the telemetry because it knows the program's complete behavioral structure.
+
+---
+
+## What Vor eliminates
+
+Compared to a typical Java/Go/Kubernetes stack, Vor + BEAM eliminates:
+
+- Separate design specification (the spec is the program)
+- External design verification tooling (TLA+ for small protocols)
+- External chaos testing infrastructure (Chaos Monkey, Litmus, Toxiproxy)
+- External contract tests (Pact — protocol checked at compile time)
+- Docker containers (no container OS, no additional CVEs)
+- Kubernetes orchestration (OTP supervision + libcluster)
+- Container registry
+- Service mesh (BEAM message passing)
+- Inter-service load balancers (direct process-to-process messaging)
+- External message queue (BEAM mailboxes replace Kafka/RabbitMQ)
+- Serialization between services (native BEAM terms)
+- Build tool complexity (mix replaces Maven/Gradle)
+- Manual concurrency primitives (no locks, semaphores, thread pools)
+- Telemetry instrumentation code (compiler-generated)
+- External input validation framework (protocol `where` constraints)
+- Rolling deploy infrastructure (BEAM hot code reload)
+- Helm charts (no Kubernetes)
+
+What you still need: infrastructure provisioning (Terraform), reverse proxy for external HTTP (nginx/Caddy), telemetry backend (Prometheus/Grafana), CI/CD pipeline, load testing, secrets management.
 
 ---
 
 ## How it fits with Gleam
 
-Vor doesn't replace OTP — it compiles to OTP. It's designed to complement Gleam:
+Vor is designed as a two-language stack:
 
-- **Vor** handles the coordination layer — state machines, protocols, invariants, model checking.
-- **Gleam** handles complex data processing when needed — type-safe transformations called from Vor via validated `extern gleam` blocks.
+- **Vor** — coordination logic: state machines, protocols, invariants, model checking, chaos, telemetry
+- **Gleam** — data processing when needed: type-safe transformations called through validated `extern gleam` blocks
 
-All five examples are fully native Vor. Gleam is there when you need typed library functions for complex data operations — the boundary is validated at compile time.
+All five examples are fully native Vor. Gleam is there when you need typed library functions for complex data operations.
 
 ---
 
 ## Design principles
 
-**The spec is the program.** The `.vor` file is both the specification and the implementation. No separate model to maintain. No drift.
+**The spec is the program.** No separate specification. No drift.
 
-**Guarantee tiers are explicit.** Every property is labeled `proven` or `monitored`. The compiler fails closed — it never claims to verify what it can't.
+**Guarantee tiers are explicit.** `proven` at compile time, `monitored` at runtime. The compiler fails closed.
 
-**The extern boundary is a trust boundary.** Proven invariants cannot depend on extern results. Gleam externs are type-validated.
+**Observable by default.** The compiler generates telemetry from the program's structure. No instrumentation code.
 
-**Failure is first-class.** Invariants can be violated. Resilience handlers define what happens. Recovery paths are verified.
+**Input validated at the protocol level.** `where` constraints reject invalid messages before handler code runs.
+
+**Sensitive data declared.** Fields marked `sensitive` are redacted in telemetry automatically.
+
+**Failure is first-class.** Resilience handlers define recovery. The compiler verifies recovery paths.
 
 **The BEAM is the foundation.** Thirty years of production-proven concurrency, fault tolerance, and distribution underneath.
 
 ---
 
-MIT License
+394+ tests  ·  9 property-based test suites  ·  Raft proven in 1,001 states  ·  MIT License
