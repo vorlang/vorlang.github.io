@@ -1,6 +1,6 @@
 # Vor
 
-**Verified, observable, chaos-tested distributed systems on the BEAM**
+**Verified state machines, protocol checking, chaos testing, and compiler-generated telemetry for the BEAM**
 
 *Named for the Norse goddess who witnesses oaths. Vor programs are oaths about system behavior — declared, witnessed by the compiler, and enforced.*
 
@@ -10,15 +10,17 @@
 
 ## What it does
 
-Write one file. The compiler produces a verified, instrumented, chaos-testable BEAM binary.
+The BEAM already provides process isolation, supervision, and distributed message passing — eliminating entire classes of bugs. Vor adds the layer the BEAM doesn't: verification that your state machines are correct, your protocols are compatible, and your system recovers from failures.
+
+One source file declares agents, protocols, invariants, and constraints. Two commands verify it, one stress-tests it:
 
 ```
-mix compile        →  proves safety properties           (milliseconds)
-mix vor.check      →  model-checks message interleavings (seconds)
-mix vor.simulate   →  chaos-tests real BEAM processes    (minutes)
+mix compile        →  proves safety properties              (milliseconds)
+mix vor.check      →  bounded-verifies multi-agent invariants  (seconds)
+mix vor.simulate   →  chaos-tests real BEAM processes        (minutes)
 ```
 
-The compiled binary is pre-instrumented with telemetry. No separate spec. No separate chaos infrastructure. No instrumentation code. No Docker. No Kubernetes.
+The compiled binary is a standard OTP process, pre-instrumented with telemetry — no separate spec, no instrumentation code.
 
 ---
 
@@ -86,7 +88,7 @@ The `safety` invariant is proven at compile time. The `where` constraint rejects
 
 ## Multi-agent model checking
 
-Wire agents together and `mix vor.check` proves distributed invariants:
+Wire agents together and `mix vor.check` bounded-verifies distributed invariants by exploring all message interleavings within configured bounds:
 
 ```vor
 system RaftCluster do
@@ -111,33 +113,35 @@ end
 Tracked fields:    current_term, role, vote_count
 Abstracted fields: commit_index, log, voted_for
 Symmetry:          enabled (3 identical agents, 6× reduction)
-✓ Proven (1001 states, depth 10)
+✓ Bounded-verified (1001 states, depth 10)
 ```
 
 ---
 
-## Chaos simulation
+## Chaos testing
+
+Verification proves properties within bounds on a model. Chaos testing complements it by exercising real compiled code under failure — catching implementation bugs, timing issues, and recovery failures the model checker can't reach.
 
 ```bash
 mix vor.simulate --partition --delay --workload 10
 ```
 
-Starts real BEAM processes. Injects real failures. Checks invariants against live state:
+Starts real BEAM processes, injects real failures, checks invariants against live state:
 
 - Kill agents randomly, let supervisors restart them
 - Partition connections via proxy processes
 - Delay messages for configurable durations
 - Generate client workload from protocol declarations
-- Check invariants every second
+- Check invariants periodically against live state
 - Replay any run with `--seed N`
 
-No Chaos Monkey. No Toxiproxy. No Docker. The BEAM provides all the failure injection primitives as function calls.
+For BEAM-native systems, no external chaos infrastructure is needed — the BEAM provides failure injection as function calls.
 
 ---
 
 ## Auto-generated telemetry
 
-Every compiled Vor agent is observable by default. Zero instrumentation code.
+The compiler knows every state field, message type, and transition. It generates telemetry calls in the compiled bytecode — no instrumentation code in the source file.
 
 | Event | Fires on |
 |---|---|
@@ -147,33 +151,15 @@ Every compiled Vor agent is observable by default. Zero instrumentation code.
 | `[:vor, :message, :emitted]` | Reply sent |
 | `[:vor, :constraint, :violated]` | Protocol constraint rejection |
 
-Attach any `:telemetry` backend and every agent is visible. The compiler generated the telemetry because it knows the program's complete behavioral structure.
+Attach any `:telemetry` backend and every agent is observable. You still need a metrics backend (Prometheus, Grafana) to view the data — Vor generates the events.
 
 ---
 
-## What Vor eliminates
+## What the approach simplifies
 
-Compared to a typical Java/Go/Kubernetes stack, Vor + BEAM eliminates:
+For BEAM-native actor systems, Vor addresses several concerns that typically require separate tools: formal verification replaces a separate specification language, chaos testing uses BEAM-native primitives instead of external infrastructure, protocol composition checking at compile time replaces contract testing, compiler-generated telemetry replaces manual instrumentation, and protocol constraints replace validation libraries.
 
-- Separate design specification (the spec is the program)
-- External design verification tooling (TLA+ for small protocols)
-- External chaos testing infrastructure (Chaos Monkey, Litmus, Toxiproxy)
-- External contract tests (Pact — protocol checked at compile time)
-- Docker containers (no container OS, no additional CVEs)
-- Kubernetes orchestration (OTP supervision + libcluster)
-- Container registry
-- Service mesh (BEAM message passing)
-- Inter-service load balancers (direct process-to-process messaging)
-- External message queue (BEAM mailboxes replace Kafka/RabbitMQ)
-- Serialization between services (native BEAM terms)
-- Build tool complexity (mix replaces Maven/Gradle)
-- Manual concurrency primitives (no locks, semaphores, thread pools)
-- Telemetry instrumentation code (compiler-generated)
-- External input validation framework (protocol `where` constraints)
-- Rolling deploy infrastructure (BEAM hot code reload)
-- Helm charts (no Kubernetes)
-
-What you still need: infrastructure provisioning (Terraform), reverse proxy for external HTTP (nginx/Caddy), telemetry backend (Prometheus/Grafana), CI/CD pipeline, load testing, secrets management.
+These simplifications apply to BEAM-native systems. Infrastructure-level concerns — provisioning, external HTTP routing, metrics backends, CI/CD, load testing, secrets management — remain outside the language.
 
 ---
 
@@ -181,7 +167,7 @@ What you still need: infrastructure provisioning (Terraform), reverse proxy for 
 
 Vor is designed as a two-language stack:
 
-- **Vor** — coordination logic: state machines, protocols, invariants, model checking, chaos, telemetry
+- **Vor** — coordination logic: state machines, protocols, invariants, verification, chaos testing, telemetry
 - **Gleam** — data processing when needed: type-safe transformations called through validated `extern gleam` blocks
 
 All five examples are fully native Vor. Gleam is there when you need typed library functions for complex data operations.
@@ -192,18 +178,18 @@ All five examples are fully native Vor. Gleam is there when you need typed libra
 
 **The spec is the program.** No separate specification. No drift.
 
-**Guarantee tiers are explicit.** `proven` at compile time, `monitored` at runtime. The compiler fails closed.
+**Guarantee tiers are explicit.** `proven` at compile time, `monitored` at runtime. The compiler fails closed — it never claims to verify what it can't.
 
-**Observable by default.** The compiler generates telemetry from the program's structure. No instrumentation code.
+**Observable by default.** The compiler generates telemetry from the program's structure.
 
 **Input validated at the protocol level.** `where` constraints reject invalid messages before handler code runs.
 
-**Sensitive data declared.** Fields marked `sensitive` are redacted in telemetry automatically.
+**Sensitive data declared.** Fields marked `sensitive` are redacted in telemetry.
 
-**Failure is first-class.** Resilience handlers define recovery. The compiler verifies recovery paths.
+**Failure is first-class.** Resilience handlers define recovery. Recovery paths are verified.
 
-**The BEAM is the foundation.** Thirty years of production-proven concurrency, fault tolerance, and distribution underneath.
+**The BEAM is the foundation.** Thirty years of production-proven concurrency, fault tolerance, and distribution.
 
 ---
 
-394+ tests  ·  9 property-based test suites  ·  Raft proven in 1,001 states  ·  MIT License
+394+ tests  ·  9 property-based test suites  ·  Raft bounded-verified in 1,001 states  ·  MIT License
