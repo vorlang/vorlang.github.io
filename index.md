@@ -1,6 +1,6 @@
 # Vor
 
-**Verified state machines, protocol checking, chaos testing, and compiler-generated telemetry for the BEAM**
+**A BEAM language designed as a compilation target for AI coding agents — with verified state machines, protocol checking, chaos testing, and compiler-generated telemetry**
 
 *Named for the Norse goddess who witnesses oaths. Vor programs are oaths about system behavior — declared, witnessed by the compiler, and enforced.*
 
@@ -8,7 +8,11 @@
 
 ---
 
-## What it does
+## Why
+
+AI agents are writing more and more code. They'll inevitably build distributed systems. And they'll produce that code faster than humans can review it.
+
+We need compilers that catch what human review would miss — not as a separate practice, but as part of ordinary compilation.
 
 The BEAM already provides process isolation, supervision, and distributed message passing — eliminating entire classes of bugs. Vor adds the layer the BEAM doesn't: verification that your state machines are correct, your protocols are compatible, and your system recovers from failures.
 
@@ -20,7 +24,7 @@ mix vor.check      →  bounded-verifies multi-agent invariants  (seconds)
 mix vor.simulate   →  chaos-tests real BEAM processes        (minutes)
 ```
 
-The compiled binary is a standard OTP process, pre-instrumented with telemetry — no separate spec, no instrumentation code.
+An AI agent writes one file. Three commands verify it. The compiled binary is a standard OTP process, pre-instrumented with telemetry — no separate spec, no instrumentation code.
 
 ---
 
@@ -189,6 +193,13 @@ All five examples are fully native Vor. Gleam is there when you need typed libra
 **Failure is first-class.** Resilience handlers define recovery. Recovery paths are verified.
 
 **The BEAM is the foundation.** Thirty years of production-proven concurrency, fault tolerance, and distribution.
+
+---
+
+## Related projects
+
+- [VorDB](https://github.com/vorlang/vordb) — a CRDT-based distributed database built with Vor for coordination and Gleam for data processing
+- [Tyn](https://github.com/tyn-os/kernel) — a minimal Rust microkernel that runs the BEAM on bare metal (no Linux). Vor + Tyn is the long-term vision: verified distributed systems on a purpose-built kernel.
 
 ---
 
